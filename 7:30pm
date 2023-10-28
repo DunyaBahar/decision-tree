@@ -1,0 +1,183 @@
+import java.util.ArrayList;
+import java.util.Arrays;
+
+public class DecisionTree<T> extends SupervisedLearner {
+	
+	public DecisionTree<Double> parent;
+	public ArrayList<DecisionTree<Double>> children;
+
+	public DataMatrix features;
+	public DataMatrix labels;
+	public ArrayList<Integer> remainingAttributeIndicies;
+	public Double majorityClass;
+		
+	// constructor
+	public DecisionTree() {}
+	
+	// done. constructor
+	public DecisionTree(DataMatrix features, DataMatrix labels, ArrayList<Integer> remainingAttributeIndicies) {
+		this.features = features;
+		this.labels = labels;
+		this.remainingAttributeIndicies = remainingAttributeIndicies;
+		this.majorityClass = labels.getMostCommonValueForColumn(0);
+	}
+	
+	// creates the first tree / parent node...
+	@Override
+	public void train(DataMatrix featuresOnlyDataMatrix, DataMatrix labelsOnlyDataMatrix) throws Exception {
+		features = new DataMatrix(featuresOnlyDataMatrix, 0, 0, featuresOnlyDataMatrix.getRowCount(), featuresOnlyDataMatrix.getColCount());
+		labels = new DataMatrix(labelsOnlyDataMatrix, 0, 0, labelsOnlyDataMatrix.getRowCount(), labelsOnlyDataMatrix.getColCount());
+		remainingAttributeIndicies = new ArrayList<>();
+		for (int i = 0; i < features.getColCount(); i++)
+			remainingAttributeIndicies.add(i);
+		majorityClass = labels.getMostCommonValueForColumn(0);
+		buildTree();
+		pruneTree();
+	}
+
+	// done
+	public void buildTree() {
+		children = new ArrayList<DecisionTree<Double>>();
+		if ( (isPure()) || (remainingAttributeIndicies.size() == 0) )  // at a leaf node
+			this.majorityClass = labels.getMostCommonValueForColumn(0);
+		else {  // not yet at a leaf node
+			int bestAttribute = pickBestAttribute();  // a column index into features
+			ArrayList<Double> possibleValsForBestAttr = getPossibleVals(bestAttribute);
+			for (double val : possibleValsForBestAttr) {  // iterate thru the new children
+				ArrayList<Integer> subsetOfRows = new ArrayList<>();
+				for (int i = 0; i < features.getRowCount(); i++)
+					if (features.getValueAt(i, bestAttribute) == val)
+						subsetOfRows.add(i);
+				DataMatrix childFeatures = new DataMatrix();
+				DataMatrix childLabels = new DataMatrix();
+				childFeatures.setSize(subsetOfRows.size(), features.getColCount());
+				childLabels.setSize(subsetOfRows.size(), 1);
+				// copy over data for this child:
+				for (int i = 0; i < subsetOfRows.size(); i++) {
+					childLabels.setValue( i, 0, labels.getRow(subsetOfRows.get(i))[0] );
+					for (int j = 0; j < features.getColCount(); j++)
+						childFeatures.setValue( i, j, features.getRow(subsetOfRows.get(i))[j] );
+				}  // end for i. We have the child's data.
+				ArrayList<Integer> childRemainingAttrs = new ArrayList<>(this.remainingAttributeIndicies);
+				childRemainingAttrs.remove(bestAttribute);
+				DecisionTree<Double> child = new DecisionTree<Double>(childFeatures, childLabels, childRemainingAttrs);
+				children.add(child);
+			}
+			for (DecisionTree<Double> child : children)
+				child.buildTree();
+		}
+	}
+	
+	// done
+	public ArrayList<Double> getPossibleVals(int attributeIndex) {
+		ArrayList<Double> uniqueValuesList = new ArrayList<>();
+		for (int i = 0; i < features.getRowCount(); i++) {
+			double value = features.getValueAt(i, attributeIndex);
+			if (!uniqueValuesList.contains(value))
+				uniqueValuesList.add(value);
+		}
+		return uniqueValuesList;
+	}
+
+	// done
+	// 0 2 5 9
+	public int pickBestAttribute() {
+		double bestInfoSoFar = 0;
+		int bestAttributeSoFar = -1;
+		for (int i = 0; i < remainingAttributeIndicies.size(); i++) {
+			double thisInfo = calculateInfoGivenA(i);
+			if (thisInfo > bestInfoSoFar) {
+				bestInfoSoFar = thisInfo;
+				bestAttributeSoFar = i;
+			}
+		}
+		return bestAttributeSoFar;
+	}
+	
+	// done
+	public boolean isPure() {
+		double firstLabel = labels.getRow(0)[0];
+		if (labels.getRowCount() > 1)
+			for (int i = 1; i < labels.getRowCount(); i++) {
+				double label = labels.getRow(i)[0];
+				if (label != firstLabel)
+					return false;  // return false whenever there is a different label.
+			}
+		return true;  // made it through all labels without finding a different label.
+	}
+	
+	// done
+	public double calculateInfoGivenA(int attributeIndex) {
+		// create a list of the possible values that this column can take on:
+		ArrayList<Double> possibleValsForA = new ArrayList<>();
+		possibleValsForA.add(features.getValueAt(0, attributeIndex));
+		for (int i = 0; i < features.getRowCount(); i++) {
+			double thisValue = features.getValueAt(i, attributeIndex);
+			if ( !possibleValsForA.contains(thisValue) )
+				possibleValsForA.add(thisValue);
+		}
+		double summation = 0;
+		// for each possible value in this column:
+		for (double val : possibleValsForA) {
+			ArrayList<double[]> subsetFeatures = new ArrayList<>();
+			ArrayList<Double> subsetLabels = new ArrayList<>();
+			for (int j = 0; j < features.getRowCount(); j++) {
+				double thisValue = features.getValueAt(j, attributeIndex);
+				if (thisValue == val) {
+					subsetFeatures.add(features.getRow(j));
+					subsetLabels.add(labels.getRow(j)[0]);
+				}
+			}
+			double infoOfSubset = calculateInfo(subsetFeatures, subsetLabels);
+			summation += ( ( subsetLabels.size() / ((double) features.getRowCount()) ) ) * infoOfSubset;
+		}
+		return summation;
+	}
+	
+	// done
+	public double calculateInfo(ArrayList<double[]> features, ArrayList<Double> labels) {
+		double sum = 0;
+		int nVals = 4;  // for the cars and vote data set, we'll never have more than 4 possible output classes.
+		double[] outputClasses = new double[nVals];
+		int i = 0;
+		for (int j = 0; j < labels.size(); j++) {
+			double thisVal = labels.get(j);
+			boolean found = false;  // flag
+			for (double val : outputClasses)  // check whether we've already seen this value.
+				if (thisVal == val)
+					found = true;
+			if (!found) {  // if we've not seen thisVal before:
+				outputClasses[i] = thisVal;  // add it to our list of possible output classes.
+				i++;  // increment i to fill next spot
+			}
+			if (i == nVals)  // if we've already discovered all the possible output classes,
+				break;  // break out of the for loop
+		}
+		for (double outputClass : outputClasses) {
+			double classProbability = classProbability(outputClass, labels);
+			if (classProbability != 0)
+				sum += classProbability * (Math.log(classProbability) / Math.log(2.0));
+		}
+		return -sum;
+	}
+	
+	// done
+	public double classProbability(double theClass, ArrayList<Double> labels) {
+	    int tally = 0;
+	    for (int i = 0; i < labels.size(); i++)
+	        if (labels.get(i) == theClass)
+	            tally++;
+	    return (double) tally / labels.size();
+	}
+
+	@Override
+	public void predictInstanceLabelsFromFeatures(double[] featureVector, double[] arrayInWhichToPutLabels)
+			throws Exception {
+
+	}
+	
+	private void pruneTree() {
+		// do nothing for now.
+	}
+
+}
