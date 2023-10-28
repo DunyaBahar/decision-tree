@@ -1,5 +1,6 @@
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Random;
 
 public class DecisionTree<T> extends SupervisedLearner {
 	
@@ -8,8 +9,13 @@ public class DecisionTree<T> extends SupervisedLearner {
 
 	public DataMatrix features;
 	public DataMatrix labels;
+	
+	DataMatrix valFeatures;
+	DataMatrix valLabels;
+	
 	public ArrayList<Integer> remainingAttributeIndicies;
 	public Double majorityClass;
+	public int bestAttribute;
 		
 	// constructor
 	public DecisionTree() {}
@@ -27,52 +33,110 @@ public class DecisionTree<T> extends SupervisedLearner {
 	public void train(DataMatrix featuresOnlyDataMatrix, DataMatrix labelsOnlyDataMatrix) throws Exception {
 		features = new DataMatrix(featuresOnlyDataMatrix, 0, 0, featuresOnlyDataMatrix.getRowCount(), featuresOnlyDataMatrix.getColCount());
 		labels = new DataMatrix(labelsOnlyDataMatrix, 0, 0, labelsOnlyDataMatrix.getRowCount(), labelsOnlyDataMatrix.getColCount());
+		
+		// split out validation set:
+		Random rand = new Random();
+		features.shuffleRowOrderWithBuddyMatrix(rand, labelsOnlyDataMatrix);
+		int valSize = (int) (features.getRowCount() * .2);
+		int trainSize = features.getRowCount() - valSize;
+		features = new DataMatrix(features, 0, 0, trainSize, features.getColCount());
+		valFeatures = new DataMatrix(features, trainSize, 0, valSize, features.getColCount());
+		labels = new DataMatrix(labels, 0, 0, trainSize, labels.getColCount());
+	    valLabels = new DataMatrix(labels, trainSize, 0, valSize, labels.getColCount());
+		
+		fixMissingValsGivenClass();
 		remainingAttributeIndicies = new ArrayList<>();
 		for (int i = 0; i < features.getColCount(); i++)
 			remainingAttributeIndicies.add(i);
 		majorityClass = labels.getMostCommonValueForColumn(0);
 		buildTree();
+		printTree();
 		pruneTree();
+	}
+	
+//	private void fixMissingVals() {
+//		int nFeatures = features.getColCount();
+//		double[] means = new double[nFeatures];
+//		for (int i = 0; i < nFeatures; i++)
+//			means[i] = features.getColumnMean(i);
+//		for (int i = 0; i < features.getRowCount(); i++)
+//			for (int j = 0; j < features.getColCount(); j++)
+//				if (features.getValueAt(i,  j) == DataMatrix.MISSING)
+//					features.setValue(i, j, means[j]);
+//	}
+
+	private void fixMissingValsGivenClass() {
+		int nFeatures = features.getColCount();
+		int nRows = features.getRowCount();
+		ArrayList<Double> uniqueClassLabels = getPossibleVals(0, labels);
+		int nPossibleClasses = uniqueClassLabels.size();
+		double[][] meansForClasses = new double[nFeatures][nPossibleClasses];
+		for (int j = 0; j < nFeatures; j++) {
+			for (double classLabel : uniqueClassLabels) {
+				double sum = 0;
+				int count = 0;
+				for (int i = 0; i < nRows; i++)
+					if (labels.getValueAt(i,0) == classLabel && features.getValueAt(i, j) != DataMatrix.MISSING) {
+						sum += features.getValueAt(i,  j);
+						count++;
+					}
+				if (count != 0) 
+					meansForClasses[j][uniqueClassLabels.indexOf(classLabel)] = (sum / count);
+				else
+					meansForClasses[j][uniqueClassLabels.indexOf(classLabel)] =0;
+			}
+		}
+		for ( int i = 0; i < nRows; i++) {
+			double currentClass = labels.getValueAt(i, 0);
+			int classIndex = uniqueClassLabels.indexOf(currentClass);
+			for (int j = 0; j < nFeatures; j++)
+				if (features.getValueAt(i,  j) == DataMatrix.MISSING)
+					features.setValue(i,  j,  meansForClasses[j][classIndex]);
+		}
 	}
 
 	// done
 	public void buildTree() {
 		children = new ArrayList<DecisionTree<Double>>();
-		if ( (isPure()) || (remainingAttributeIndicies.size() == 0) )  // at a leaf node
+		if ( (isPure()) || (remainingAttributeIndicies.size() == 0) )  {
 			this.majorityClass = labels.getMostCommonValueForColumn(0);
-		else {  // not yet at a leaf node
-			int bestAttribute = pickBestAttribute();  // a column index into features
-			ArrayList<Double> possibleValsForBestAttr = getPossibleVals(bestAttribute);
-			for (double val : possibleValsForBestAttr) {  // iterate thru the new children
-				ArrayList<Integer> subsetOfRows = new ArrayList<>();
-				for (int i = 0; i < features.getRowCount(); i++)
-					if (features.getValueAt(i, bestAttribute) == val)
-						subsetOfRows.add(i);
-				DataMatrix childFeatures = new DataMatrix();
-				DataMatrix childLabels = new DataMatrix();
-				childFeatures.setSize(subsetOfRows.size(), features.getColCount());
-				childLabels.setSize(subsetOfRows.size(), 1);
-				// copy over data for this child:
-				for (int i = 0; i < subsetOfRows.size(); i++) {
-					childLabels.setValue( i, 0, labels.getRow(subsetOfRows.get(i))[0] );
-					for (int j = 0; j < features.getColCount(); j++)
-						childFeatures.setValue( i, j, features.getRow(subsetOfRows.get(i))[j] );
-				}  // end for i. We have the child's data.
-				ArrayList<Integer> childRemainingAttrs = new ArrayList<>(this.remainingAttributeIndicies);
-				childRemainingAttrs.remove(bestAttribute);
-				DecisionTree<Double> child = new DecisionTree<Double>(childFeatures, childLabels, childRemainingAttrs);
-				children.add(child);
-			}
-			for (DecisionTree<Double> child : children)
-				child.buildTree();
+			return;
 		}
+		bestAttribute = pickBestAttribute();  // a column index into features
+		if (bestAttribute == -1) {
+			this.majorityClass = labels.getMostCommonValueForColumn(0);
+			return;
+		}
+		ArrayList<Double> possibleValsForBestAttr = getPossibleVals(bestAttribute, features);
+		for (double val : possibleValsForBestAttr) {  // iterate thru the new children
+			ArrayList<Integer> subsetOfRows = new ArrayList<>();
+			for (int i = 0; i < features.getRowCount(); i++)
+				if (features.getValueAt(i, bestAttribute) == val)
+					subsetOfRows.add(i);
+			DataMatrix childFeatures = new DataMatrix();
+			DataMatrix childLabels = new DataMatrix();
+			childFeatures.setSize(subsetOfRows.size(), features.getColCount());
+			childLabels.setSize(subsetOfRows.size(), 1);
+			// copy over data for this child:
+			for (int i = 0; i < subsetOfRows.size(); i++) {
+				childLabels.setValue( i, 0, labels.getRow(subsetOfRows.get(i))[0] );
+				for (int j = 0; j < features.getColCount(); j++)
+					childFeatures.setValue( i, j, features.getRow(subsetOfRows.get(i))[j] );
+			}  // end for i. We have the child's data.
+			ArrayList<Integer> childRemainingAttrs = new ArrayList<>(this.remainingAttributeIndicies);
+			childRemainingAttrs.remove(Integer.valueOf(bestAttribute));
+			DecisionTree<Double> child = new DecisionTree<Double>(childFeatures, childLabels, childRemainingAttrs);
+			children.add(child);
+		}
+		for (DecisionTree<Double> child : children)
+			child.buildTree();
 	}
 	
 	// done
-	public ArrayList<Double> getPossibleVals(int attributeIndex) {
+	public ArrayList<Double> getPossibleVals(int attributeIndex, DataMatrix data) {
 		ArrayList<Double> uniqueValuesList = new ArrayList<>();
-		for (int i = 0; i < features.getRowCount(); i++) {
-			double value = features.getValueAt(i, attributeIndex);
+		for (int i = 0; i < data.getRowCount(); i++) {
+			double value = data.getValueAt(i, attributeIndex);
 			if (!uniqueValuesList.contains(value))
 				uniqueValuesList.add(value);
 		}
@@ -82,16 +146,19 @@ public class DecisionTree<T> extends SupervisedLearner {
 	// done
 	// 0 2 5 9
 	public int pickBestAttribute() {
-		double bestInfoSoFar = 0;
+		double bestInfoSoFar = Double.MAX_VALUE;
 		int bestAttributeSoFar = -1;
 		for (int i = 0; i < remainingAttributeIndicies.size(); i++) {
 			double thisInfo = calculateInfoGivenA(i);
-			if (thisInfo > bestInfoSoFar) {
+			if (thisInfo < bestInfoSoFar) {
 				bestInfoSoFar = thisInfo;
 				bestAttributeSoFar = i;
 			}
 		}
-		return bestAttributeSoFar;
+		if (bestAttributeSoFar == -1)
+			return -1;
+		else
+			return remainingAttributeIndicies.get(bestAttributeSoFar);
 	}
 	
 	// done
@@ -173,11 +240,58 @@ public class DecisionTree<T> extends SupervisedLearner {
 	@Override
 	public void predictInstanceLabelsFromFeatures(double[] featureVector, double[] arrayInWhichToPutLabels)
 			throws Exception {
+		if (isPure() || remainingAttributeIndicies.size() == 0) {
+			arrayInWhichToPutLabels[0] = this.majorityClass;
+			return;
+		}
+		if (bestAttribute == -1) {
+			arrayInWhichToPutLabels[0] = this.majorityClass;
+			return;
+		}
+		double thisVal = featureVector[bestAttribute];
+		for (DecisionTree<Double> child : children)
+			if (child.features.getValueAt(0, bestAttribute) == thisVal) {
+				child.predictInstanceLabelsFromFeatures(featureVector, arrayInWhichToPutLabels);
+				return;
+			}
+		arrayInWhichToPutLabels[0] = this.majorityClass;
+	}
+
+	public void printTree() {
+	    printTree("", true, 0); // go up to depth 5
+	}
+
+	private void printTree(String prefix, boolean isLeaf, int currentDepth) {
+	    if (currentDepth >= 3)
+	        return; // I don't care about after depth 3
+	    if (isPure() || remainingAttributeIndicies.size() == 0)
+	        System.out.println(prefix + (isLeaf ? "└── " : "├── ") + "***CLASS*** is " + this.majorityClass);
+	    else
+	        System.out.println(prefix + (isLeaf ? "└── " : "├── ") + "split on attribute " + bestAttribute);
+	    if (children != null) {
+	        for (int i = 0; i < children.size() - 1; i++)
+	            children.get(i).printTree(prefix + (isLeaf ? "    " : "│   "), false, currentDepth + 1);
+	        if (children.size() > 0)
+	            children.get(children.size() - 1).printTree(prefix + (isLeaf ? "    " : "│   "), true, currentDepth + 1);
+	    }
+	}
+
+	private double getValAccuracy() {
+		int correctPredictions = 0;
+		for (int i = 0; i < valFeatures.getRowCount(); i++) {
+		    double[] featureRow = valFeatures.getRow(i);
+		    double predictedLabel = tree.predict(featureRow);
+		    double actualLabel = valLabels.getRow(i)[0];
+		    if (predictedLabel == actualLabel) {
+		        correctPredictions++;
+		    }
+		}
+		double accuracy = (double) correctPredictions / valFeatures.getRowCount();
 
 	}
 	
 	private void pruneTree() {
-		// do nothing for now.
+		
 	}
 
 }
